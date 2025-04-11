@@ -8,13 +8,11 @@ PORT = 5000             # Match this with client.py
 MAX_CONNECTIONS = 20
 
 clients = []
+usernames = {}  # socket -> username
 clients_lock = threading.Lock()
 running = True
 
 def broadcast(message, sender_socket):
-    """
-    Send message to all clients.
-    """
     with clients_lock:
         for client in clients[:]:
             try:
@@ -23,34 +21,71 @@ def broadcast(message, sender_socket):
                 # Drop client if failed to send
                 clients.remove(client)
                 client.close()
+                usernames.pop(client, None)
+
+def send_dm(recipient_name, sender_name, content, sender_socket):
+    message = f"DM:{recipient_name}:{sender_name}:{content}".encode()
+    sent = False
+
+    with clients_lock:
+        for client, username in usernames.items():
+            if username == recipient_name:
+                try:
+                    client.sendall(message)
+                    sent = True
+                    break
+                except:
+                    clients.remove(client)
+                    client.close()
+                    usernames.pop(client, None)
+                    break
+
+    if not sent:
+        try:
+            sender_socket.sendall(f"[Server] User '{recipient_name}' not found.".encode())
+        except:
+            pass
 
 def handle_client(client_socket, client_address):
-    """
-    Handle messages from a single client.
-    """
     print(f"[+] Connected: {client_address}")
-    with clients_lock:
-        clients.append(client_socket)
-
     try:
+        # First message = username
+        username = client_socket.recv(1024).decode().strip()
+        if not username:
+            raise ValueError("Empty username")
+
+        with clients_lock:
+            clients.append(client_socket)
+            usernames[client_socket] = username
+
         while True:
             message = client_socket.recv(1024)
             if not message:
                 break
-            broadcast(message, client_socket)
+
+            decoded = message.decode()
+
+            if decoded.startswith("DM:"):
+                try:
+                    _, recipient, sender, content = decoded.split(":", 3)
+                    send_dm(recipient, sender, content, client_socket)
+                except ValueError:
+                    client_socket.sendall(b"[Server] Invalid DM format.")
+            else:
+                broadcast(message, sender_socket=client_socket)
+
     except Exception as e:
         print(f"[!] Error with {client_address}: {e}")
     finally:
         with clients_lock:
             if client_socket in clients:
                 clients.remove(client_socket)
+            usernames.pop(client_socket, None)
         client_socket.close()
         print(f"[-] Disconnected: {client_address}")
 
+
 def server_loop(server_socket):
-    """
-    Accept new client connections in a loop.
-    """
     global running
     server_socket.settimeout(1.0)  # Allow loop to check 'running' flag
     print(f"[*] Server listening on {HOST}:{PORT} - press enter to quit.")
@@ -98,6 +133,7 @@ def main():
         for client in clients:
             client.close()
         clients.clear()
+        usernames.clear()
 
     server_thread.join()
     print("[*] Server stopped cleanly.")

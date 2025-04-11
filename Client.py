@@ -2,8 +2,8 @@ import socket
 import threading
 import queue
 import sys
+import re
 from UI import ChatUI
-# from emojis import replace_emojis  # Optional: if implementing emoji feature
 
 SERVER_HOST = '127.0.0.1'
 SERVER_PORT = 5000
@@ -40,6 +40,13 @@ def main():
         print("Username cannot be empty.")
         sys.exit(1)
 
+    # Send username to server first
+    try:
+        client_sock.sendall(username.encode())
+    except Exception as e:
+        print(f"Failed to send username to server: {e}")
+        sys.exit(1)
+
     # Set up Queue and Thread for Incoming Messages
     message_queue = queue.Queue()
     stop_event = threading.Event()
@@ -48,17 +55,32 @@ def main():
 
     # Launch UI
     def send_callback(user_input):
-        message = f"[{username}] {user_input}"
-        # message = replace_emojis(message)  # Optional
         try:
-            client_sock.sendall(message.encode())
+            # Check for DM pattern: @username message
+            if user_input.startswith("@"):
+                match = re.match(r'@(\w+)\s+(.*)', user_input)
+                if match:
+                    recipient, content = match.groups()
+                    dm_message = f"DM:{recipient}:{username}:{content}"
+                    client_sock.sendall(dm_message.encode())
+                else:
+                    message_queue.put("[System] Invalid DM format. Use @username message")
+            else:
+                # Regular broadcast
+                message = f"[{username}] {user_input}"
+                client_sock.sendall(message.encode())
         except Exception as e:
             message_queue.put(f"[Error] Failed to send: {e}")
             stop_event.set()
 
+
     def on_close():
         stop_event.set()
-        client_sock.close()
+        try:
+            client_sock.sendall(f"[{username}] has left the chat.".encode())
+            client_sock.close()
+        except:
+            pass
         sys.exit(0)
 
     chat_ui = ChatUI(username=username, message_queue=message_queue, send_callback=send_callback, on_close=on_close)
